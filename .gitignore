@@ -1,0 +1,9 @@
+venv/
+chroma_db/
+.env
+trustpilot.csv
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
