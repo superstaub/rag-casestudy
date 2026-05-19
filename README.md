@@ -37,7 +37,8 @@ venv\Scripts\activate        # Windows
 ### 4. Install dependencies
 ```bash
 pip install llama-index llama-index-embeddings-openai llama-index-llms-openai \
-            llama-index-vector-stores-chroma chromadb pandas streamlit python-dotenv
+            llama-index-vector-stores-chroma chromadb pandas streamlit python-dotenv \
+            sentence-transformers
 ```
 
 ### 5. Set your API key
@@ -86,24 +87,30 @@ Runs 18 test queries (4× EN, DE, IT, FR + 2 refusal cases) and prints pass/fail
 ├── app.py           # Streamlit UI
 ├── eval.py          # Evaluation harness (18 test queries)
 ├── cost_model.md    # Token cost breakdown + monthly projection
-├── trustpilot.csv   # Source data (UTF-16 LE, tab-separated, 3,548 rows)
-├── chroma_db/       # Persistent vector store (created by build_index.py)
-├── .env             # OPENAI_API_KEY (not committed)
-└── venv/            # Python virtual environment
+├── trustpilot.csv   # Source data — not in repo, must be provided separately
+├── chroma_db/       # Persistent vector store — not in repo, created by build_index.py
+├── .env             # OPENAI_API_KEY — not in repo
+└── venv/            # Python virtual environment — not in repo
 ```
 
 ---
 
 ## Key design decisions
 
-**Metadata exclusion from embedding prefix**  
-`content` and `title` fields are excluded from the LlamaIndex metadata prefix that gets prepended to document text during embedding. They are stored in metadata for citation cards but not double-counted in the vector representation.
+**Two-stage retrieval with cross-encoder reranking**  
+The embedding model (`text-embedding-3-small`) retrieves 32 candidates (4× top-k) as a broad first pass. A local multilingual cross-encoder (`mmarco-mMiniLMv2-L12-H384-v1`) then re-scores each (query, review) pair by meaning rather than vector distance, and the best 8 are kept. This eliminates language-clustering bias: a French query can surface the most relevant German review without penalising it for being in a different language.
 
-**Cosine similarity threshold (0.25)**  
-Queries where all top-k results score below 0.25 trigger a graceful refusal. This is intentionally conservative to minimize false refusals; tune upward (0.35) for stricter relevance.
+**Embedding fast-fail threshold (0.20)**  
+If the best cosine similarity score across all 32 candidates is below 0.20, the query is completely off-topic and the pipeline refuses immediately without calling the cross-encoder or LLM. A second refusal layer exists at LLM level via a structured `[NO_RELEVANT_REVIEWS]` token.
+
+**Metadata exclusion from embedding prefix**  
+`content`, `title`, and `date_ts` fields are excluded from the LlamaIndex metadata prefix that gets prepended to document text during embedding. They are stored in metadata for citation cards and filtering but not double-counted in the vector representation.
+
+**Date range filtering**  
+Reviews are indexed with a `date_ts` Unix timestamp field, enabling Chroma pre-filters (`>=`, `<=`) before retrieval. Date ranges can be set via the UI or expressed in natural language (e.g. "past two months") — the pipeline detects date keywords and makes a small LLM call to parse the range automatically.
 
 **Language filter**  
-Uses LlamaIndex `ExactMatchFilter` on the `language` metadata field. Selecting a language restricts retrieval to that language's reviews only.
+Uses LlamaIndex `MetadataFilter` on the `language` metadata field. Selecting a language restricts the Chroma search space to that language's reviews before retrieval.
 
 **Answer language**  
 The system prompt instructs GPT-4o-mini to answer in the user's query language. No translation step needed — the model handles this natively.
@@ -116,7 +123,7 @@ See [cost_model.md](cost_model.md) for full breakdown.
 
 | Scenario | Monthly cost |
 |---|---|
-| 20 employees × 5 queries/day × 22 days | **~$0.66** |
+| 20 employees × 5 queries/day × 22 days | **~$0.73** |
 
 ---
 
